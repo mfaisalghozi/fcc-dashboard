@@ -38,7 +38,7 @@ function handleReviewConfirm(updates: Partial<UTREntry>) {
 }
 
 const processing = ref(false)
-const errorMsg = ref<string | null>(null)
+const errorMsgs = ref<string[]>([])
 
 const agent = new InvestigationAgent(import.meta.env.VITE_ANTHROPIC_API_KEY ?? '')
 
@@ -104,14 +104,15 @@ async function runInvestigation(
     } as Partial<UTREntry>)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Investigation failed'
-    errorMsg.value = `Failed to investigate bundle: ${message}`
+    errorMsgs.value.push(`Failed to investigate bundle: ${message}`)
     batchStore.removeEntry(entryId)
   }
 }
 
 async function processAllBundles(bundleList: File[][]) {
   processing.value = true
-  errorMsg.value = null
+  errorMsgs.value = []
+  allLockedFiles.value = []
 
   // Create placeholder entries for all bundles upfront
   const bundleEntries: LockedBundle[] = bundleList.map((files) => {
@@ -160,7 +161,7 @@ async function processAllBundles(bundleList: File[][]) {
         allLockedFiles.value.push(...err.lockedFiles)
       } else {
         const message = err instanceof Error ? err.message : 'Extraction failed'
-        errorMsg.value = `Failed to process bundle: ${message}`
+        errorMsgs.value.push(`Failed to process bundle: ${message}`)
         batchStore.removeEntry(entryId)
       }
     }
@@ -249,7 +250,9 @@ function handleCloseBatch() {
       </button>
     </header>
 
-    <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
+    <div v-if="errorMsgs.length > 0" class="error">
+      <p v-for="msg in errorMsgs" :key="msg" class="error-line">{{ msg }}</p>
+    </div>
 
     <div class="grid">
       <section class="card">
@@ -416,6 +419,13 @@ function handleCloseBatch() {
   border-radius: 8px;
   font-size: 13px;
   margin-bottom: 16px;
+}
+
+.error-line {
+  margin: 0;
+}
+.error-line + .error-line {
+  margin-top: 4px;
 }
 
 .grid {
