@@ -2,6 +2,25 @@ import mammoth from 'mammoth'
 import * as XLSX from 'xlsx'
 import type { UTREntry, Transaction, FiveW2H } from '@/types/utr'
 
+export class PasswordRequiredError extends Error {
+  constructor(public lockedFiles: string[]) {
+    super('Files are password-protected')
+    this.name = 'PasswordRequiredError'
+  }
+}
+
+function isPasswordError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
+  return msg.includes('password') || msg.includes('encrypted') || msg.includes('cfb')
+}
+
+async function isOleFile(file: File): Promise<boolean> {
+  const buf = await file.slice(0, 8).arrayBuffer()
+  const bytes = new Uint8Array(buf)
+  // OLE2 Compound File Binary magic bytes: D0 CF 11 E0
+  return bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0
+}
+
 export class UTRDocumentParser {
   async parseDocxAnalysis(file: File): Promise<string> {
     const arrayBuffer = await file.arrayBuffer()
