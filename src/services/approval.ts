@@ -1,18 +1,8 @@
 import * as XLSX from 'xlsx'
 import type { Batch, UTREntry } from '@/types/utr'
+import type { ApprovalRow } from '@/types/approval'
 
-export interface ApprovalRow {
-  no: number
-  utrNumber: string
-  userCount: number
-  tipologi: string
-  criminalIndication: string
-  escalationLetter: string
-  beneficiary: string
-  transactionCount: number
-  transactionAmount: number
-  decision: string
-}
+export type { ApprovalRow }
 
 export function buildApprovalRows(entries: UTREntry[]): ApprovalRow[] {
   return entries.map((e, idx) => ({

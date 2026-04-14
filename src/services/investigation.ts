@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { Transaction, FiveW2H, Decision } from '@/types/utr'
+import type { Transaction } from '@/types/utr'
+import type { InvestigationResult } from '@/types/investigation'
 
 const LTKM_MATRIX = `
 Tipologi matrix (LTKM SOP Lampiran 2):
@@ -12,14 +13,7 @@ Tipologi matrix (LTKM SOP Lampiran 2):
 7. Business termination — from KYC refusal
 `
 
-export interface InvestigationResult {
-  fiveW2H: FiveW2H
-  tipologi: string
-  criminalAssociation: string
-  decision: Decision
-  reasoning: string
-  confidence: number
-}
+export type { InvestigationResult }
 
 export class InvestigationAgent {
   private client: Anthropic
