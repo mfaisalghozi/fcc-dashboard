@@ -183,6 +183,52 @@ async function processAllBundles(bundleList: File[][]) {
   processing.value = false
 }
 
+async function handlePasswordSubmit(passwords: Record<string, string>) {
+  showPasswordModal.value = false
+  const bundlesToRetry = [...lockedBundles.value]
+  lockedBundles.value = []
+  allLockedFiles.value = []
+
+  processing.value = true
+  errorMsgs.value = []
+
+  const retryResults = await Promise.allSettled(
+    bundlesToRetry.map(({ files, entryId }) =>
+      parser.parseBundle(files, passwords).then((parsed) => ({ parsed, files, entryId }))
+    )
+  )
+
+  const investigationQueue: Array<{ parsed: Partial<UTREntry>; files: File[]; entryId: string }> = []
+
+  retryResults.forEach((result, i) => {
+    const { files, entryId } = bundlesToRetry[i]
+    if (result.status === 'fulfilled') {
+      investigationQueue.push(result.value)
+    } else {
+      const err = result.reason
+      const message = err instanceof Error ? err.message : 'Failed to open file'
+      errorMsgs.value.push(`Password error: ${message}`)
+      batchStore.removeEntry(entryId)
+    }
+  })
+
+  await Promise.allSettled(
+    investigationQueue.map(({ parsed, files, entryId }) =>
+      runInvestigation(parsed, files, entryId)
+    )
+  )
+
+  processing.value = false
+}
+
+function handlePasswordCancel() {
+  showPasswordModal.value = false
+  for (const { entryId } of lockedBundles.value) {
+    batchStore.removeEntry(entryId)
+  }
+  lockedBundles.value = []
+  allLockedFiles.value = []
+}
 
 function handleCloseBatch() {
   if (!canClose.value) return
@@ -208,6 +254,13 @@ function handleCloseBatch() {
 
 <template>
   <div class="page">
+    <FilePasswordModal
+      v-if="showPasswordModal"
+      :locked-files="allLockedFiles"
+      @submit="handlePasswordSubmit"
+      @cancel="handlePasswordCancel"
+    />
+
     <ReviewModal
       :entry="reviewEntry"
       @close="handleReviewClose"
