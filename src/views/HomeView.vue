@@ -42,7 +42,7 @@ const modules = [
           <span class="wordmark-sep">|</span>
           <span class="wordmark-sub">Dashboard</span>
         </div>
-        <p class="tagline">Financial Crime Compliance · Zone 2 Operations</p>
+        <p class="tagline">Financial Crime Compliance</p>
       </div>
       <div class="header-rule" />
     </header>
@@ -53,7 +53,7 @@ const modules = [
       <div class="cards">
         <button
           v-for="mod in modules"
-          :key="mod.route"
+          :key="mod.label"
           class="card"
           :class="{ 'card--disabled': !mod.route }"
           @click="mod.route && router.push(mod.route)"

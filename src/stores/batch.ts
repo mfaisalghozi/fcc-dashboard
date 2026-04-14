@@ -73,6 +73,14 @@ export const useBatchStore = defineStore('batch', () => {
     currentBatch.value.entries = currentBatch.value.entries.filter((e) => e.id !== id)
   }
 
+  function confirmEntry(id: string, updates: Partial<UTREntry>) {
+    updateEntry(id, {
+      ...updates,
+      status: 'CONFIRMED',
+      confirmedAt: new Date().toISOString()
+    })
+  }
+
   function closeBatch() {
     if (!canClose.value) throw new Error('Batch cannot be closed yet')
     currentBatch.value.status = 'CLOSED'
@@ -89,6 +97,7 @@ export const useBatchStore = defineStore('batch', () => {
     addEntry,
     updateEntry,
     removeEntry,
+    confirmEntry,
     closeBatch
   }
 })

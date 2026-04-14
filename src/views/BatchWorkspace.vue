@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
 import FileUploader from '@/components/FileUploader.vue'
 import EntryList from '@/components/EntryList.vue'
+import ReviewModal from '@/components/ReviewModal.vue'
 import { useBatchStore } from '@/stores/batch'
 import { parser } from '@/services/parser'
 import { InvestigationAgent } from '@/services/investigation'
@@ -12,9 +14,27 @@ import {
 } from '@/services/approval'
 import type { UTREntry } from '@/types/utr'
 
+const router = useRouter()
 const batchStore = useBatchStore()
 const { currentBatch, reportCount, totalNominal, oldestSLADays, canClose } =
   storeToRefs(batchStore)
+
+const reviewEntry = ref<UTREntry | null>(null)
+
+function handleReviewOpen(entry: UTREntry) {
+  reviewEntry.value = entry
+}
+
+function handleReviewClose() {
+  reviewEntry.value = null
+}
+
+function handleReviewConfirm(updates: Partial<UTREntry>) {
+  if (reviewEntry.value) {
+    batchStore.confirmEntry(reviewEntry.value.id, updates)
+    reviewEntry.value = null
+  }
+}
 
 const processing = ref(false)
 const errorMsg = ref<string | null>(null)
@@ -88,9 +108,6 @@ async function handleBundle(files: File[]) {
   }
 }
 
-function handleReview(entry: UTREntry) {
-  console.log('Open review modal for', entry.utrNumber)
-}
 
 function handleCloseBatch() {
   if (!canClose.value) return
@@ -116,8 +133,19 @@ function handleCloseBatch() {
 
 <template>
   <div class="page">
+    <ReviewModal
+      :entry="reviewEntry"
+      @close="handleReviewClose"
+      @confirm="handleReviewConfirm"
+    />
+
     <nav class="breadcrumb">
-      Dashboard / <span>Logbook &amp; Approval</span>
+      <button class="back-btn" @click="router.push('/')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 12H5M12 5l-7 7 7 7"/>
+        </svg>
+      </button>
+      <span class="breadcrumb-trail">Dashboard / <span class="breadcrumb-current">Logbook &amp; Approval</span></span>
     </nav>
     <h1 class="title">Batch workspace</h1>
     <p class="sub">
@@ -162,7 +190,7 @@ function handleCloseBatch() {
         <h2 class="card-title">Current batch entries</h2>
         <EntryList
           :entries="currentBatch.entries"
-          @review="handleReview"
+          @review="handleReviewOpen"
           @remove="batchStore.removeEntry"
         />
 
@@ -195,11 +223,39 @@ function handleCloseBatch() {
 }
 
 .breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0.5px solid #d3d1c7;
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+  color: #5f5e5a;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.back-btn:hover {
+  background: #f1efe8;
+  color: #2c2c2a;
+}
+.back-btn svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+.breadcrumb-trail {
   font-size: 13px;
   color: #5f5e5a;
-  margin-bottom: 8px;
 }
-.breadcrumb span {
+.breadcrumb-current {
   color: #2c2c2a;
 }
 
@@ -207,11 +263,13 @@ function handleCloseBatch() {
   font-size: 22px;
   font-weight: 500;
   margin: 0 0 4px;
+  margin-left: 38px;
 }
 .sub {
   font-size: 13px;
   color: #5f5e5a;
   margin: 0 0 20px;
+  margin-left: 38px;
 }
 
 .batch-hdr {
