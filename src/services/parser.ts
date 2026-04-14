@@ -17,8 +17,11 @@ function isPasswordError(err: unknown): boolean {
 async function isOleFile(file: File): Promise<boolean> {
   const buf = await file.slice(0, 8).arrayBuffer()
   const bytes = new Uint8Array(buf)
-  // OLE2 Compound File Binary magic bytes: D0 CF 11 E0
-  return bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0
+  // Full OLE2 Compound File Binary magic bytes: D0 CF 11 E0 A1 B1 1A E1
+  return (
+    bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0 &&
+    bytes[4] === 0xa1 && bytes[5] === 0xb1 && bytes[6] === 0x1a && bytes[7] === 0xe1
+  )
 }
 
 export class UTRDocumentParser {
