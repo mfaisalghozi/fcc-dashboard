@@ -249,7 +249,7 @@ function badgeText(entry: UTREntry): string {
   transition: background 0.15s;
 }
 .review-btn:hover {
-  background: #1450884;
+  background: #145088;
 }
 .review-btn--ghost {
   background: transparent;
