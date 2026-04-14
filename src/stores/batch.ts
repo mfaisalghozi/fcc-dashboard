@@ -12,10 +12,20 @@ function generateBatchNumber(): string {
   return `BATCH-${year}-${month}-${String(next).padStart(2, '0')}`
 }
 
+const CURRENT_BATCH_NUMBER_KEY = 'current-batch-number'
+
+function getOrCreateBatchNumber(): string {
+  const saved = localStorage.getItem(CURRENT_BATCH_NUMBER_KEY)
+  if (saved) return saved
+  const fresh = generateBatchNumber()
+  localStorage.setItem(CURRENT_BATCH_NUMBER_KEY, fresh)
+  return fresh
+}
+
 export const useBatchStore = defineStore('batch', () => {
   const currentBatch = ref<Batch>({
     id: crypto.randomUUID(),
-    batchNumber: generateBatchNumber(),
+    batchNumber: getOrCreateBatchNumber(),
     reportingPeriod: new Date().toLocaleString('id-ID', {
       month: 'long',
       year: 'numeric'
@@ -85,6 +95,7 @@ export const useBatchStore = defineStore('batch', () => {
     if (!canClose.value) throw new Error('Batch cannot be closed yet')
     currentBatch.value.status = 'CLOSED'
     currentBatch.value.closedAt = new Date().toISOString()
+    localStorage.removeItem(CURRENT_BATCH_NUMBER_KEY)
   }
 
   return {
