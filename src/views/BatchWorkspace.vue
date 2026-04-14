@@ -304,7 +304,7 @@ function handleCloseBatch() {
     </header>
 
     <div v-if="errorMsgs.length > 0" class="error">
-      <p v-for="msg in errorMsgs" :key="msg" class="error-line">{{ msg }}</p>
+      <p v-for="(msg, i) in errorMsgs" :key="i" class="error-line">{{ msg }}</p>
     </div>
 
     <div class="grid">
