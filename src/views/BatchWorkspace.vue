@@ -201,7 +201,7 @@ async function handlePasswordSubmit(passwords: Record<string, string>) {
   const investigationQueue: Array<{ parsed: Partial<UTREntry>; files: File[]; entryId: string }> = []
 
   retryResults.forEach((result, i) => {
-    const { files, entryId } = bundlesToRetry[i]
+    const { entryId } = bundlesToRetry[i]
     if (result.status === 'fulfilled') {
       investigationQueue.push(result.value)
     } else {
