@@ -68,17 +68,50 @@ export class UTRDocumentParser {
     return { utrNumber, userName }
   }
 
-  async parseBundle(files: File[]): Promise<Partial<UTREntry>> {
+  async parseBundle(files: File[], passwords?: Record<string, string>): Promise<Partial<UTREntry>> {
     const docx = files.find((f) => f.name.endsWith('.docx'))
     const xlsx = files.find((f) => f.name.endsWith('.xlsx'))
 
     if (!docx) throw new Error('Missing .docx analysis document')
     if (!xlsx) throw new Error('Missing .xlsx working paper')
 
-    const narrative = await this.parseDocxAnalysis(docx)
-    const transactions = await this.parseXlsxWorkingPaper(xlsx)
-    const { utrNumber, userName } = this.extractUTRMetadata(docx.name, narrative)
+    const lockedFiles: string[] = []
 
+    // Detect encrypted .docx (OLE2 format — mammoth cannot decrypt these)
+    const docxIsOle = await isOleFile(docx)
+    if (docxIsOle) {
+      if (passwords?.[docx.name] !== undefined) {
+        // Retry case: mammoth limitation — inform user explicitly
+        throw new Error(
+          `Cannot open "${docx.name}": encrypted .docx files are not supported. ` +
+          `Remove the password in Word and re-upload.`
+        )
+      }
+      lockedFiles.push(docx.name)
+    }
+
+    // Try .xlsx with optional password
+    let transactions: Transaction[] = []
+    try {
+      transactions = await this.parseXlsxWorkingPaper(xlsx, passwords?.[xlsx.name])
+    } catch (err) {
+      if (isPasswordError(err)) {
+        if (passwords?.[xlsx.name] !== undefined) {
+          // Retry case: password was provided but still failed — wrong password
+          throw new Error(`Incorrect password for "${xlsx.name}"`)
+        }
+        lockedFiles.push(xlsx.name)
+      } else {
+        throw err
+      }
+    }
+
+    // Surface all locked files in one error so the modal can list them
+    if (lockedFiles.length > 0) throw new PasswordRequiredError(lockedFiles)
+
+    // Both files are accessible — proceed with full parse
+    const narrative = await this.parseDocxAnalysis(docx)
+    const { utrNumber, userName } = this.extractUTRMetadata(docx.name, narrative)
     const totalAmount = transactions.reduce((sum, t) => sum + t.amount, 0)
 
     return {
