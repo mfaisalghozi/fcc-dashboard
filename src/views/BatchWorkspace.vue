@@ -40,7 +40,8 @@ function handleReviewConfirm(updates: Partial<UTREntry>) {
 const processing = ref(false)
 const errorMsgs = ref<string[]>([])
 
-const agent = new InvestigationAgent(import.meta.env.VITE_ANTHROPIC_API_KEY ?? '')
+const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY ?? ''
+const agent = apiKey ? new InvestigationAgent(apiKey) : null
 
 // Password modal state
 interface LockedBundle {
@@ -83,25 +84,34 @@ function handleBundle(files: File[]) {
 async function runInvestigation(
   parsed: Partial<UTREntry>,
   files: File[],
-  entryId: string
+  entryId: string,
+  passwords?: Record<string, string>
 ) {
   try {
-    const narrativeFile = files.find((f) => f.name.endsWith('.docx'))!
-    const narrative = await parser.parseDocxAnalysis(narrativeFile)
-    const investigation = await agent.investigate(
-      narrative,
-      parsed.transactions ?? [],
-      parsed.userName ?? 'Unknown'
-    )
-    batchStore.updateEntry(entryId, {
-      ...parsed,
-      status: 'PENDING_REVIEW',
-      fiveW2H: investigation.fiveW2H,
-      tipologi: investigation.tipologi,
-      criminalAssociation: investigation.criminalAssociation,
-      decision: investigation.decision,
-      beneficiary: investigation.fiveW2H.who.name
-    } as Partial<UTREntry>)
+    if (agent) {
+      const narrativeFile = files.find((f) => f.name.endsWith('.docx'))!
+      const narrative = await parser.parseDocxAnalysis(narrativeFile, passwords?.[narrativeFile.name])
+      const investigation = await agent.investigate(
+        narrative,
+        parsed.transactions ?? [],
+        parsed.userName ?? 'Unknown'
+      )
+      batchStore.updateEntry(entryId, {
+        ...parsed,
+        status: 'PENDING_REVIEW',
+        fiveW2H: investigation.fiveW2H,
+        tipologi: investigation.tipologi,
+        criminalAssociation: investigation.criminalAssociation,
+        decision: investigation.decision,
+        beneficiary: investigation.fiveW2H.who.name
+      } as Partial<UTREntry>)
+    } else {
+      // No API key — skip AI, go straight to manual review
+      batchStore.updateEntry(entryId, {
+        ...parsed,
+        status: 'PENDING_REVIEW',
+      } as Partial<UTREntry>)
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Investigation failed'
     errorMsgs.value.push(`Failed to investigate bundle: ${message}`)
@@ -214,7 +224,7 @@ async function handlePasswordSubmit(passwords: Record<string, string>) {
 
   await Promise.allSettled(
     investigationQueue.map(({ parsed, files, entryId }) =>
-      runInvestigation(parsed, files, entryId)
+      runInvestigation(parsed, files, entryId, passwords)
     )
   )
 

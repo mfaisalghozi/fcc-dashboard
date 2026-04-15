@@ -1,6 +1,7 @@
 import mammoth from 'mammoth'
 import * as XLSX from 'xlsx'
 import type { UTREntry, Transaction, FiveW2H } from '@/types/utr'
+import { decryptDocx, decryptOleFile } from '@/services/docxDecryptor'
 
 export class PasswordRequiredError extends Error {
   constructor(public lockedFiles: string[]) {
@@ -10,6 +11,7 @@ export class PasswordRequiredError extends Error {
 }
 
 function isPasswordError(err: unknown): boolean {
+  if (typeof DOMException !== 'undefined' && err instanceof DOMException) return true
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
   return msg.includes('password') || msg.includes('encrypted') || msg.includes('cfb')
 }
@@ -25,18 +27,19 @@ async function isOleFile(file: File): Promise<boolean> {
 }
 
 export class UTRDocumentParser {
-  async parseDocxAnalysis(file: File): Promise<string> {
-    const arrayBuffer = await file.arrayBuffer()
+  async parseDocxAnalysis(file: File, password?: string): Promise<string> {
+    const arrayBuffer = password ? await decryptDocx(file, password) : await file.arrayBuffer()
     const result = await mammoth.extractRawText({ arrayBuffer })
     return result.value
   }
 
   async parseXlsxWorkingPaper(file: File, password?: string): Promise<Transaction[]> {
-    const arrayBuffer = await file.arrayBuffer()
-    const workbook = XLSX.read(arrayBuffer, {
-      type: 'array',
-      ...(password !== undefined ? { password } : {})
-    })
+    // If the file is OLE-encrypted, decrypt it ourselves (same algorithm as docx)
+    // then hand the raw ZIP bytes to SheetJS — no SheetJS password handling needed.
+    const arrayBuffer = (password !== undefined && await isOleFile(file))
+      ? await decryptOleFile(file, password)
+      : await file.arrayBuffer()
+    const workbook = XLSX.read(new Uint8Array(arrayBuffer), { type: 'array' })
     const sheetName = workbook.SheetNames[0]
     const sheet = workbook.Sheets[sheetName]
     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet)
@@ -77,17 +80,27 @@ export class UTRDocumentParser {
 
     const lockedFiles: string[] = []
 
-    // Detect encrypted .docx (OLE2 format — mammoth cannot decrypt these)
+    // Detect encrypted .docx (OLE2 format)
     const docxIsOle = await isOleFile(docx)
     if (docxIsOle) {
-      if (passwords?.[docx.name] !== undefined) {
-        // Retry case: mammoth limitation — inform user explicitly
-        throw new Error(
-          `Cannot open "${docx.name}": encrypted .docx files are not supported. ` +
-          `Remove the password in Word and re-upload.`
-        )
+      const docxPassword = passwords?.[docx.name]
+      if (docxPassword !== undefined) {
+        // Retry case: attempt client-side decryption
+        try {
+          await decryptDocx(docx, docxPassword) // validate password works before continuing
+        } catch (err) {
+          // DOMException from Web Crypto (empty message on some browsers) = wrong password
+          const isDomException = typeof DOMException !== 'undefined' && err instanceof DOMException
+          const msg = err instanceof Error ? err.message : ''
+          throw new Error(
+            isDomException || isPasswordError(err) || !msg
+              ? `Incorrect password for "${docx.name}"`
+              : `Cannot open "${docx.name}": ${msg}`
+          )
+        }
+      } else {
+        lockedFiles.push(docx.name)
       }
-      lockedFiles.push(docx.name)
     }
 
     // Try .xlsx with optional password
@@ -110,7 +123,7 @@ export class UTRDocumentParser {
     if (lockedFiles.length > 0) throw new PasswordRequiredError(lockedFiles)
 
     // Both files are accessible — proceed with full parse
-    const narrative = await this.parseDocxAnalysis(docx)
+    const narrative = await this.parseDocxAnalysis(docx, passwords?.[docx.name])
     const { utrNumber, userName } = this.extractUTRMetadata(docx.name, narrative)
     const totalAmount = transactions.reduce((sum, t) => sum + t.amount, 0)
 

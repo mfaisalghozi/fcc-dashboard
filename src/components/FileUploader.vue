@@ -9,36 +9,91 @@ const dragOver = ref(false)
 const inputRef = ref<HTMLInputElement>()
 
 function groupFilesByUTR(files: File[]): File[][] {
-  const groups = new Map<string, File[]>()
+  const result: File[][] = []
+  const ungrouped: File[] = []
 
+  // Pass 1 — standard UTR-YYYY-NNNNNN naming convention
+  const standardGroups = new Map<string, File[]>()
   for (const file of files) {
     const match = file.name.match(/UTR[-_](\d{4})[-_]?(\d+)/i)
-    const key = match ? `${match[1]}-${match[2]}` : file.name.split('.')[0]
-    if (!groups.has(key)) groups.set(key, [])
-    groups.get(key)!.push(file)
+    if (match) {
+      const key = `${match[1]}-${match[2]}`
+      if (!standardGroups.has(key)) standardGroups.set(key, [])
+      standardGroups.get(key)!.push(file)
+    } else {
+      ungrouped.push(file)
+    }
+  }
+  result.push(...standardGroups.values())
+
+  if (ungrouped.length === 0) return result
+
+  // Pass 2 — non-standard naming (e.g. 20.RISK_NOTES.UTR.III.2026):
+  // group xlsx/pdf files with the docx whose base name is a substring of theirs
+  const docxFiles = ungrouped.filter((f) => f.name.toLowerCase().endsWith('.docx'))
+  const otherFiles = ungrouped.filter((f) => !f.name.toLowerCase().endsWith('.docx'))
+  const matched = new Set<File>()
+
+  for (const docx of docxFiles) {
+    const base = docx.name.replace(/\.docx$/i, '')
+    const related = otherFiles.filter((f) => f.name.includes(base))
+    related.forEach((f) => matched.add(f))
+    result.push([docx, ...related])
   }
 
-  return Array.from(groups.values())
+  // Any files with no matching docx go into their own group
+  const unmatched = otherFiles.filter((f) => !matched.has(f))
+  if (unmatched.length > 0) result.push(unmatched)
+
+  return result
 }
 
-function handleFiles(fileList: FileList | null) {
-  if (!fileList || fileList.length === 0) return
-  const files = Array.from(fileList)
+function handleFiles(files: File[]) {
+  if (files.length === 0) return
   const bundles = groupFilesByUTR(files)
   for (const bundle of bundles) {
     emit('bundle', bundle)
   }
 }
 
-function onDrop(e: DragEvent) {
+async function readEntry(entry: FileSystemEntry): Promise<File[]> {
+  if (entry.isFile) {
+    return new Promise((resolve) => {
+      (entry as FileSystemFileEntry).file((f) => resolve([f]), () => resolve([]))
+    })
+  }
+  if (entry.isDirectory) {
+    const reader = (entry as FileSystemDirectoryEntry).createReader()
+    return new Promise((resolve) => {
+      reader.readEntries(async (entries) => {
+        const nested = await Promise.all(entries.map(readEntry))
+        resolve(nested.flat())
+      }, () => resolve([]))
+    })
+  }
+  return []
+}
+
+async function onDrop(e: DragEvent) {
   e.preventDefault()
   dragOver.value = false
-  handleFiles(e.dataTransfer?.files ?? null)
+
+  const items = e.dataTransfer?.items
+  if (items && items.length > 0) {
+    const entries = Array.from(items)
+      .map((item) => item.webkitGetAsEntry())
+      .filter((entry): entry is FileSystemEntry => entry !== null)
+    const nested = await Promise.all(entries.map(readEntry))
+    handleFiles(nested.flat())
+    return
+  }
+
+  handleFiles(Array.from(e.dataTransfer?.files ?? []))
 }
 
 function onInputChange(e: Event) {
   const target = e.target as HTMLInputElement
-  handleFiles(target.files)
+  handleFiles(Array.from(target.files ?? []))
   target.value = ''
 }
 </script>
