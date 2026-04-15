@@ -5,8 +5,9 @@ import { useRouter } from 'vue-router'
 import FileUploader from '@/components/FileUploader.vue'
 import EntryList from '@/components/EntryList.vue'
 import ReviewModal from '@/components/ReviewModal.vue'
+import FilePasswordModal from '@/components/FilePasswordModal.vue'
 import { useBatchStore } from '@/stores/batch'
-import { parser } from '@/services/parser'
+import { parser, PasswordRequiredError } from '@/services/parser'
 import { InvestigationAgent } from '@/services/investigation'
 import {
   generateApprovalExcel,
@@ -37,9 +38,23 @@ function handleReviewConfirm(updates: Partial<UTREntry>) {
 }
 
 const processing = ref(false)
-const errorMsg = ref<string | null>(null)
+const errorMsgs = ref<string[]>([])
 
-const agent = new InvestigationAgent(import.meta.env.VITE_ANTHROPIC_API_KEY ?? '')
+const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY ?? ''
+const agent = apiKey ? new InvestigationAgent(apiKey) : null
+
+// Password modal state
+interface LockedBundle {
+  files: File[]
+  entryId: string
+}
+const showPasswordModal = ref(false)
+const allLockedFiles = ref<string[]>([])
+const lockedBundles = ref<LockedBundle[]>([])
+
+// Bundle queue — collects all bundles emitted in one tick before processing
+const pendingBundles = ref<File[][]>([])
+let processingScheduled = false
 
 const slaStatus = computed(() => {
   if (oldestSLADays.value === 0) return null
@@ -53,61 +68,177 @@ function formatIDR(amount: number): string {
   return `Rp ${amount.toLocaleString('id-ID')}`
 }
 
-async function handleBundle(files: File[]) {
-  processing.value = true
-  errorMsg.value = null
-
-  const entryId = crypto.randomUUID()
-  const placeholder: UTREntry = {
-    id: entryId,
-    utrNumber: 'Extracting...',
-    status: 'EXTRACTING',
-    decision: null,
-    batchId: null,
-    userName: 'Processing...',
-    cif: '',
-    accountId: '',
-    beneficiary: '',
-    tipologi: '',
-    criminalAssociation: '',
-    transactionCount: 0,
-    transactionAmount: 0,
-    escalationDate: new Date().toISOString(),
-    escalationSource: 'EMAIL',
-    sourceFiles: files.map((f) => f.name),
-    fccPic: 'Current User'
-  }
-  batchStore.addEntry(placeholder)
-
-  try {
-    const parsed = await parser.parseBundle(files)
-    const narrativeFile = files.find((f) => f.name.endsWith('.docx'))!
-    const narrative = await parser.parseDocxAnalysis(narrativeFile)
-
-    const investigation = await agent.investigate(
-      narrative,
-      parsed.transactions ?? [],
-      parsed.userName ?? 'Unknown'
-    )
-
-    batchStore.updateEntry(entryId, {
-      ...parsed,
-      status: 'PENDING_REVIEW',
-      fiveW2H: investigation.fiveW2H,
-      tipologi: investigation.tipologi,
-      criminalAssociation: investigation.criminalAssociation,
-      decision: investigation.decision,
-      beneficiary: investigation.fiveW2H.who.name
-    } as Partial<UTREntry>)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Extraction failed'
-    errorMsg.value = `Failed to process bundle: ${message}`
-    batchStore.removeEntry(entryId)
-  } finally {
-    processing.value = false
+function handleBundle(files: File[]) {
+  pendingBundles.value.push(files)
+  if (!processingScheduled) {
+    processingScheduled = true
+    setTimeout(() => {
+      processingScheduled = false
+      const toProcess = [...pendingBundles.value]
+      pendingBundles.value = []
+      processAllBundles(toProcess)
+    }, 0)
   }
 }
 
+async function runInvestigation(
+  parsed: Partial<UTREntry>,
+  files: File[],
+  entryId: string,
+  passwords?: Record<string, string>
+) {
+  try {
+    if (agent) {
+      const narrativeFile = files.find((f) => f.name.endsWith('.docx'))!
+      const narrative = await parser.parseDocxAnalysis(narrativeFile, passwords?.[narrativeFile.name])
+      const investigation = await agent.investigate(
+        narrative,
+        parsed.transactions ?? [],
+        parsed.userName ?? 'Unknown'
+      )
+      batchStore.updateEntry(entryId, {
+        ...parsed,
+        status: 'PENDING_REVIEW',
+        fiveW2H: investigation.fiveW2H,
+        tipologi: investigation.tipologi,
+        criminalAssociation: investigation.criminalAssociation,
+        decision: investigation.decision,
+        beneficiary: investigation.fiveW2H.who.name
+      } as Partial<UTREntry>)
+    } else {
+      // No API key — skip AI, go straight to manual review
+      batchStore.updateEntry(entryId, {
+        ...parsed,
+        status: 'PENDING_REVIEW',
+      } as Partial<UTREntry>)
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Investigation failed'
+    errorMsgs.value.push(`Failed to investigate bundle: ${message}`)
+    batchStore.removeEntry(entryId)
+  }
+}
+
+async function processAllBundles(bundleList: File[][]) {
+  processing.value = true
+  errorMsgs.value = []
+  allLockedFiles.value = []
+
+  // Create placeholder entries for all bundles upfront
+  const bundleEntries: LockedBundle[] = bundleList.map((files) => {
+    const entryId = crypto.randomUUID()
+    const placeholder: UTREntry = {
+      id: entryId,
+      utrNumber: 'Extracting...',
+      status: 'EXTRACTING',
+      decision: null,
+      batchId: null,
+      userName: 'Processing...',
+      cif: '',
+      accountId: '',
+      beneficiary: '',
+      tipologi: '',
+      criminalAssociation: '',
+      transactionCount: 0,
+      transactionAmount: 0,
+      escalationDate: new Date().toISOString(),
+      escalationSource: 'EMAIL',
+      sourceFiles: files.map((f) => f.name),
+      fccPic: 'Current User'
+    }
+    batchStore.addEntry(placeholder)
+    return { files, entryId }
+  })
+
+  // Attempt parsing all bundles in parallel
+  const results = await Promise.allSettled(
+    bundleEntries.map(({ files, entryId }) =>
+      parser.parseBundle(files).then((parsed) => ({ parsed, files, entryId }))
+    )
+  )
+
+  const newLockedBundles: LockedBundle[] = []
+  const investigationQueue: Array<{ parsed: Partial<UTREntry>; files: File[]; entryId: string }> = []
+
+  results.forEach((result, i) => {
+    const { files, entryId } = bundleEntries[i]
+    if (result.status === 'fulfilled') {
+      investigationQueue.push(result.value)
+    } else {
+      const err = result.reason
+      if (err instanceof PasswordRequiredError) {
+        newLockedBundles.push({ files, entryId })
+        allLockedFiles.value.push(...err.lockedFiles)
+      } else {
+        const message = err instanceof Error ? err.message : 'Extraction failed'
+        errorMsgs.value.push(`Failed to process bundle: ${message}`)
+        batchStore.removeEntry(entryId)
+      }
+    }
+  })
+
+  // Investigate all successfully parsed bundles
+  await Promise.allSettled(
+    investigationQueue.map(({ parsed, files, entryId }) =>
+      runInvestigation(parsed, files, entryId)
+    )
+  )
+
+  // Show password modal if any bundles were locked
+  if (newLockedBundles.length > 0) {
+    lockedBundles.value = newLockedBundles
+    showPasswordModal.value = true
+  }
+
+  processing.value = false
+}
+
+async function handlePasswordSubmit(passwords: Record<string, string>) {
+  showPasswordModal.value = false
+  const bundlesToRetry = [...lockedBundles.value]
+  lockedBundles.value = []
+  allLockedFiles.value = []
+
+  processing.value = true
+  errorMsgs.value = []
+
+  const retryResults = await Promise.allSettled(
+    bundlesToRetry.map(({ files, entryId }) =>
+      parser.parseBundle(files, passwords).then((parsed) => ({ parsed, files, entryId }))
+    )
+  )
+
+  const investigationQueue: Array<{ parsed: Partial<UTREntry>; files: File[]; entryId: string }> = []
+
+  retryResults.forEach((result, i) => {
+    const { entryId } = bundlesToRetry[i]
+    if (result.status === 'fulfilled') {
+      investigationQueue.push(result.value)
+    } else {
+      const err = result.reason
+      const message = err instanceof Error ? err.message : 'Failed to open file'
+      errorMsgs.value.push(`Password error: ${message}`)
+      batchStore.removeEntry(entryId)
+    }
+  })
+
+  await Promise.allSettled(
+    investigationQueue.map(({ parsed, files, entryId }) =>
+      runInvestigation(parsed, files, entryId, passwords)
+    )
+  )
+
+  processing.value = false
+}
+
+function handlePasswordCancel() {
+  showPasswordModal.value = false
+  for (const { entryId } of lockedBundles.value) {
+    batchStore.removeEntry(entryId)
+  }
+  lockedBundles.value = []
+  allLockedFiles.value = []
+}
 
 function handleCloseBatch() {
   if (!canClose.value) return
@@ -133,6 +264,13 @@ function handleCloseBatch() {
 
 <template>
   <div class="page">
+    <FilePasswordModal
+      v-if="showPasswordModal"
+      :locked-files="allLockedFiles"
+      @submit="handlePasswordSubmit"
+      @cancel="handlePasswordCancel"
+    />
+
     <ReviewModal
       :entry="reviewEntry"
       @close="handleReviewClose"
@@ -175,7 +313,9 @@ function handleCloseBatch() {
       </button>
     </header>
 
-    <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
+    <div v-if="errorMsgs.length > 0" class="error">
+      <p v-for="(msg, i) in errorMsgs" :key="i" class="error-line">{{ msg }}</p>
+    </div>
 
     <div class="grid">
       <section class="card">
@@ -342,6 +482,13 @@ function handleCloseBatch() {
   border-radius: 8px;
   font-size: 13px;
   margin-bottom: 16px;
+}
+
+.error-line {
+  margin: 0;
+}
+.error-line + .error-line {
+  margin-top: 4px;
 }
 
 .grid {
