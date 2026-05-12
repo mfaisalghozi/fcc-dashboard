@@ -57,6 +57,20 @@ export interface UTREntry {
 
   sourceFiles: string[]
   fccPic: string
+
+  // RISK_NOTES bundle fields
+  source?: string
+  pov?: string
+  isv?: string
+  periode?: string
+  typologyText?: string
+  tpa?: string
+  tpaOther?: string
+  noSurat?: string
+  noteMark?: string
+  utrGroupId?: string
+  isGroupAnchor?: boolean
+  perBankBreakdown?: Array<{ bank: string; count: number; amount: number }>
 }
 
 export interface Batch {
