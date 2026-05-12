@@ -35,7 +35,7 @@ function groupFilesByUTR(files: File[]): File[][] {
   const matched = new Set<File>()
 
   for (const docx of docxFiles) {
-    const base = docx.name.replace(/\.docx$/i, '')
+    const base = docx.name.replace(/\.docx$/i, '').replace(/\s*\(\d+\)$/, '')
     const related = otherFiles.filter((f) => f.name.includes(base))
     related.forEach((f) => matched.add(f))
     result.push([docx, ...related])

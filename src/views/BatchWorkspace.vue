@@ -9,10 +9,7 @@ import FilePasswordModal from '@/components/FilePasswordModal.vue'
 import { useBatchStore } from '@/stores/batch'
 import { parser, PasswordRequiredError } from '@/services/parser'
 import { InvestigationAgent } from '@/services/investigation'
-import {
-  generateApprovalExcel,
-  generateApprovalEmailBody
-} from '@/services/approval'
+import { generateLogbookExcel } from '@/services/approval'
 import type { UTREntry } from '@/types/utr'
 
 const router = useRouter()
@@ -47,6 +44,7 @@ const agent = apiKey ? new InvestigationAgent(apiKey) : null
 interface LockedBundle {
   files: File[]
   entryId: string
+  isRiskNotes: boolean
 }
 const showPasswordModal = ref(false)
 const allLockedFiles = ref<string[]>([])
@@ -124,9 +122,14 @@ async function processAllBundles(bundleList: File[][]) {
   errorMsgs.value = []
   allLockedFiles.value = []
 
+  type ParseSuccess =
+    | { type: 'standard'; parsed: Partial<UTREntry>; files: File[]; entryId: string }
+    | { type: 'risk-notes'; entries: UTREntry[]; entryId: string }
+
   // Create placeholder entries for all bundles upfront
-  const bundleEntries: LockedBundle[] = bundleList.map((files) => {
+  const bundleEntries = bundleList.map((files) => {
     const entryId = crypto.randomUUID()
+    const isRiskNotes = files.some(f => f.name.includes('Profil_Pengguna_Jasa'))
     const placeholder: UTREntry = {
       id: entryId,
       utrNumber: 'Extracting...',
@@ -144,16 +147,18 @@ async function processAllBundles(bundleList: File[][]) {
       escalationDate: new Date().toISOString(),
       escalationSource: 'EMAIL',
       sourceFiles: files.map((f) => f.name),
-      fccPic: 'Current User'
+      fccPic: ''
     }
     batchStore.addEntry(placeholder)
-    return { files, entryId }
+    return { files, entryId, isRiskNotes }
   })
 
   // Attempt parsing all bundles in parallel
   const results = await Promise.allSettled(
-    bundleEntries.map(({ files, entryId }) =>
-      parser.parseBundle(files).then((parsed) => ({ parsed, files, entryId }))
+    bundleEntries.map(({ files, entryId, isRiskNotes }): Promise<ParseSuccess> =>
+      isRiskNotes
+        ? parser.parseRiskNotesBundle(files).then(entries => ({ type: 'risk-notes' as const, entries, entryId }))
+        : parser.parseBundle(files).then(parsed => ({ type: 'standard' as const, parsed, files, entryId }))
     )
   )
 
@@ -161,13 +166,19 @@ async function processAllBundles(bundleList: File[][]) {
   const investigationQueue: Array<{ parsed: Partial<UTREntry>; files: File[]; entryId: string }> = []
 
   results.forEach((result, i) => {
-    const { files, entryId } = bundleEntries[i]
+    const { files, entryId, isRiskNotes } = bundleEntries[i]
     if (result.status === 'fulfilled') {
-      investigationQueue.push(result.value)
+      const val = result.value
+      if (val.type === 'risk-notes') {
+        batchStore.removeEntry(entryId)
+        for (const entry of val.entries) batchStore.addEntry(entry)
+      } else {
+        investigationQueue.push(val)
+      }
     } else {
       const err = result.reason
       if (err instanceof PasswordRequiredError) {
-        newLockedBundles.push({ files, entryId })
+        newLockedBundles.push({ files, entryId, isRiskNotes })
         allLockedFiles.value.push(...err.lockedFiles)
       } else {
         const message = err instanceof Error ? err.message : 'Extraction failed'
@@ -177,14 +188,13 @@ async function processAllBundles(bundleList: File[][]) {
     }
   })
 
-  // Investigate all successfully parsed bundles
+  // Investigate all successfully parsed standard bundles
   await Promise.allSettled(
     investigationQueue.map(({ parsed, files, entryId }) =>
       runInvestigation(parsed, files, entryId)
     )
   )
 
-  // Show password modal if any bundles were locked
   if (newLockedBundles.length > 0) {
     lockedBundles.value = newLockedBundles
     showPasswordModal.value = true
@@ -202,9 +212,15 @@ async function handlePasswordSubmit(passwords: Record<string, string>) {
   processing.value = true
   errorMsgs.value = []
 
+  type RetrySuccess =
+    | { type: 'standard'; parsed: Partial<UTREntry>; files: File[]; entryId: string }
+    | { type: 'risk-notes'; entries: UTREntry[]; entryId: string }
+
   const retryResults = await Promise.allSettled(
-    bundlesToRetry.map(({ files, entryId }) =>
-      parser.parseBundle(files, passwords).then((parsed) => ({ parsed, files, entryId }))
+    bundlesToRetry.map(({ files, entryId, isRiskNotes }): Promise<RetrySuccess> =>
+      isRiskNotes
+        ? parser.parseRiskNotesBundle(files, passwords).then(entries => ({ type: 'risk-notes' as const, entries, entryId }))
+        : parser.parseBundle(files, passwords).then(parsed => ({ type: 'standard' as const, parsed, files, entryId }))
     )
   )
 
@@ -213,7 +229,13 @@ async function handlePasswordSubmit(passwords: Record<string, string>) {
   retryResults.forEach((result, i) => {
     const { entryId } = bundlesToRetry[i]
     if (result.status === 'fulfilled') {
-      investigationQueue.push(result.value)
+      const val = result.value
+      if (val.type === 'risk-notes') {
+        batchStore.removeEntry(entryId)
+        for (const entry of val.entries) batchStore.addEntry(entry)
+      } else {
+        investigationQueue.push(val)
+      }
     } else {
       const err = result.reason
       const message = err instanceof Error ? err.message : 'Failed to open file'
@@ -245,20 +267,13 @@ function handleCloseBatch() {
 
   batchStore.closeBatch()
 
-  const excelBlob = generateApprovalExcel(currentBatch.value)
-  const { subject, body } = generateApprovalEmailBody(currentBatch.value)
-
+  const excelBlob = generateLogbookExcel(currentBatch.value)
   const url = URL.createObjectURL(excelBlob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `${currentBatch.value.batchNumber}_approval.xlsx`
+  link.download = `${currentBatch.value.batchNumber}_logbook.xlsx`
   link.click()
   URL.revokeObjectURL(url)
-
-  const mailto = `mailto:pejabat.apuppt@dana.co.id?subject=${encodeURIComponent(
-    subject
-  )}&body=${encodeURIComponent(body)}`
-  window.location.href = mailto
 }
 </script>
 
@@ -309,7 +324,7 @@ function handleCloseBatch() {
         :disabled="!canClose"
         @click="handleCloseBatch"
       >
-        Close batch &amp; generate approval
+        Close batch &amp; export logbook
       </button>
     </header>
 
