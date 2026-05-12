@@ -88,6 +88,101 @@ export function generateApprovalExcel(batch: Batch): Blob {
   })
 }
 
+function formatDateDDMMYYYY(isoDate: string): string {
+  if (!isoDate) return ''
+  const d = new Date(isoDate)
+  if (isNaN(d.getTime())) return ''
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  return `${dd}/${mm}/${d.getFullYear()}`
+}
+
+export function generateLogbookExcel(batch: Batch): Blob {
+  const batchNum = parseInt(/(\d+)$/.exec(batch.batchNumber)?.[1] ?? '0', 10)
+
+  const headers = [
+    'Batch', 'Source', 'POV', 'No UTR', 'NAMA PENGGUNA', 'CIF', 'Login ID',
+    'ISV', 'PERIODE', 'TYPOLOGY UTR', 'TPA', 'TPA Other', 'No. Surat', 'Note/Mark',
+    'Beneficiary/entity', 'Tangal Eskalasi', 'Jumlah trx', 'Nominal Trx',
+    'SLA Escalate to Approval', 'Approval', 'Send', 'SLA Approval to Send',
+    'FCC PIC', 'Account Closure Status', '', '', ''
+  ]
+
+  type Row = (string | number)[]
+
+  const dataRows: Row[] = batch.entries.map((entry): Row => {
+    const isGrouped = !!entry.utrGroupId
+    const trxCount = isGrouped && !entry.isGroupAnchor ? 0 : entry.transactionCount
+    const trxAmount = isGrouped && !entry.isGroupAnchor ? 0 : entry.transactionAmount
+    return [
+      batchNum,
+      entry.source ?? 'N/A',
+      entry.pov ?? 'N/A',
+      entry.utrNumber,
+      entry.userName,
+      entry.cif,
+      entry.accountId,
+      entry.isv ?? 'N/A',
+      entry.periode ?? '',
+      entry.typologyText ?? entry.tipologi,
+      entry.tpa ?? entry.tipologi,
+      entry.tpaOther ?? 'N/A',
+      entry.noSurat ?? 'N/A',
+      entry.noteMark ?? 'N/A',
+      entry.beneficiary ?? 'N/A',
+      formatDateDDMMYYYY(entry.escalationDate),
+      trxCount,
+      trxAmount,
+      '', '', '', '',
+      entry.fccPic,
+      '',
+      '',  // col Y — separator
+      '',  // col Z — bank count (overlaid below)
+      '',  // col AA — bank amount (overlaid below)
+    ]
+  })
+
+  // Overlay per-bank breakdown in cols Z/AA (indices 25/26).
+  // Offset = numBanks rows after the anchor (matching the Logbook_Example layout where
+  // 4 banks means breakdown starts at anchor+4, TOTAL at anchor+8).
+  const emptyRow = (): Row => new Array<string>(27).fill('')
+
+  batch.entries.forEach((entry, anchorIdx) => {
+    if (!entry.isGroupAnchor || !entry.perBankBreakdown) return
+    const breakdown = entry.perBankBreakdown
+    const startOffset = breakdown.length  // skip numBanks rows, then place breakdown
+
+    breakdown.forEach((bank, offset) => {
+      const targetIdx = anchorIdx + startOffset + offset
+      while (dataRows.length <= targetIdx) dataRows.push(emptyRow())
+      dataRows[targetIdx][25] = bank.count
+      dataRows[targetIdx][26] = bank.amount
+    })
+
+    const totalIdx = anchorIdx + startOffset + breakdown.length
+    while (dataRows.length <= totalIdx) dataRows.push(emptyRow())
+    dataRows[totalIdx][25] = breakdown.reduce((s, b) => s + b.count, 0)
+    dataRows[totalIdx][26] = breakdown.reduce((s, b) => s + b.amount, 0)
+  })
+
+  const worksheet = XLSX.utils.aoa_to_sheet([headers, ...dataRows])
+  worksheet['!cols'] = [
+    { wch: 6 },  { wch: 8 },  { wch: 6 },  { wch: 28 }, { wch: 22 },
+    { wch: 22 }, { wch: 18 }, { wch: 6 },  { wch: 10 }, { wch: 36 },
+    { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 22 },
+    { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 22 }, { wch: 12 },
+    { wch: 12 }, { wch: 20 }, { wch: 14 }, { wch: 22 }, { wch: 2 },
+    { wch: 12 }, { wch: 16 },
+  ]
+
+  const workbook = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Logbook')
+  const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })
+  return new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  })
+}
+
 export function generateApprovalEmailBody(batch: Batch): {
   subject: string
   body: string
